@@ -1,0 +1,6 @@
+{
+  "name": "Product Publisher and Media Manager",
+  "description": "A comprehensive tool to manage Google Drive files, upload media, and coordinate product sharing via WhatsApp channels and chat with elegant marketing greetings.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
