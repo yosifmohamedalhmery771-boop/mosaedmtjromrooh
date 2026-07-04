@@ -28,6 +28,7 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
   
   // Feedback states
   const [isSharing, setIsSharing] = useState(false);
+  const [shareProgress, setShareProgress] = useState('');
   const [shareSuccessMessage, setShareSuccessMessage] = useState('');
   const [copiedText, setCopiedText] = useState(false);
 
@@ -166,18 +167,22 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
 
     setIsSharing(true);
     setShareSuccessMessage('');
+    setShareProgress('جاري تحضير البيانات...');
 
     const compiledMessage = getCompiledMessage();
     const selected = images.filter(img => selectedImageIds.includes(img.id));
 
     let sharedSuccessfully = false;
+    const fileArray: File[] = [];
 
     // Try Web Share API with Files if supported
     if (navigator.share && selected.length > 0) {
       try {
-        const fileArray: File[] = [];
-        
+        let idx = 0;
         for (const img of selected) {
+          idx++;
+          const percent = Math.round(((idx - 1) / selected.length) * 100);
+          setShareProgress(`جاري تحميل الصور: ${idx}/${selected.length} (${percent}%)`);
           try {
             const blob = await fetchDriveFileAsBlob(img.id, settings.appsScriptUrl, settings.apiKey);
             let mimeType = blob.type || 'image/jpeg';
@@ -199,52 +204,68 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
           }
         }
 
-        const canShareFiles = navigator.canShare && navigator.canShare({ files: fileArray });
-        if (fileArray.length > 0 && (canShareFiles || !navigator.canShare)) {
-          await navigator.share({
-            files: fileArray,
-            title: 'نشر في قناة الواتساب',
-            text: compiledMessage
-          });
-          sharedSuccessfully = true;
-          setShareSuccessMessage('✨ تم إطلاق مشاركة الصور والنص معاً بنجاح عبر نظام التشغيل! يرجى اختيار تطبيق واتساب لنشرها فوراً في قناتك.');
+        if (fileArray.length > 0) {
+          setShareProgress('جاري فتح قائمة تطبيقات المشاركة...');
+          // Check if navigator.canShare is supported
+          let canShareFiles = false;
+          try {
+            if (navigator.canShare) {
+              canShareFiles = navigator.canShare({ files: fileArray });
+            } else {
+              canShareFiles = true;
+            }
+          } catch (e) {
+            canShareFiles = true;
+          }
+
+          if (canShareFiles) {
+            await navigator.share({
+              files: fileArray,
+              title: 'نشر في قناة الواتساب',
+              text: compiledMessage
+            });
+            sharedSuccessfully = true;
+            setShareSuccessMessage('✨ تم إطلاق مشاركة الصور والنص معاً بنجاح عبر نظام التشغيل! يرجى اختيار تطبيق واتساب لنشرها فوراً في قناتك.');
+          }
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error('Native share with files failed:', err);
+        if (err && (err.name === 'AbortError' || err.message?.includes('share flow was canceled') || err.message?.includes('Share canceled'))) {
+          sharedSuccessfully = true;
+          setShareSuccessMessage('❌ تم إلغاء عملية المشاركة.');
+        }
       }
     }
 
     // Fallback 1: Try sharing just the text via navigator.share
     if (!sharedSuccessfully && navigator.share) {
       try {
+        setShareProgress('جاري مشاركة النص...');
         await navigator.share({
           title: 'نشر في قناة الواتساب',
           text: compiledMessage
         });
         sharedSuccessfully = true;
         setShareSuccessMessage('✨ تم إرسال النص لقائمة المشاركة بنجاح! لعدم توافق مشاركة ملفات الصور مع متصفحك الحالي، يرجى حفظ الصور المرفقة ونشرها يدوياً.');
-      } catch (err) {
+      } catch (err: any) {
         console.error('Native share with text failed:', err);
+        if (err && (err.name === 'AbortError' || err.message?.includes('share flow was canceled') || err.message?.includes('Share canceled'))) {
+          sharedSuccessfully = true;
+          setShareSuccessMessage('❌ تم إلغاء عملية المشاركة.');
+        }
       }
     }
 
     // Fallback 2: Clipboard + Download + Open WhatsApp Channel URL (Desktop / non-supported browser)
     if (!sharedSuccessfully) {
+      setShareProgress('جاري نسخ النص وتنزيل الصور...');
       try {
         // Try to write image and text to clipboard if possible
         const clipboardData: Record<string, Blob> = {};
         clipboardData['text/plain'] = new Blob([compiledMessage], { type: 'text/plain' });
         
-        if (selected.length > 0) {
-          try {
-            const firstImg = selected[0];
-            const blob = await fetchDriveFileAsBlob(firstImg.id, settings.appsScriptUrl, settings.apiKey);
-            let mimeType = blob.type || 'image/jpeg';
-            if (mimeType === 'application/octet-stream') mimeType = 'image/jpeg';
-            clipboardData[mimeType] = blob;
-          } catch (e) {
-            console.error('Failed to prepare clipboard image:', e);
-          }
+        if (fileArray.length > 0) {
+          clipboardData[fileArray[0].type || 'image/jpeg'] = fileArray[0];
         }
         
         if (Object.keys(clipboardData).length > 1) {
@@ -261,7 +282,26 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
         }
       }
 
-      if (selected.length > 0) {
+      // Download from already loaded fileArray if possible to avoid double downloads
+      if (fileArray.length > 0) {
+        let saveIdx = 0;
+        for (const file of fileArray) {
+          saveIdx++;
+          setShareProgress(`جاري حفظ الصورة ${saveIdx}/${fileArray.length}...`);
+          try {
+            const url = window.URL.createObjectURL(file);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = file.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+          } catch (e) {
+            console.error('Error saving cached file:', e);
+          }
+        }
+      } else if (selected.length > 0) {
         await downloadSelectedImages();
       }
 
@@ -276,6 +316,7 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
     }
 
     setIsSharing(false);
+    setShareProgress('');
   };
 
   const handleShareGeneral = async () => {
@@ -286,18 +327,22 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
 
     setIsSharing(true);
     setShareSuccessMessage('');
+    setShareProgress('جاري تحضير البيانات...');
 
     const compiledMessage = getCompiledMessage();
     const selected = images.filter(img => selectedImageIds.includes(img.id));
 
     let sharedSuccessfully = false;
+    const fileArray: File[] = [];
 
     // Try Web Share API with Files if supported
     if (navigator.share && selected.length > 0) {
       try {
-        const fileArray: File[] = [];
-        
+        let idx = 0;
         for (const img of selected) {
+          idx++;
+          const percent = Math.round(((idx - 1) / selected.length) * 100);
+          setShareProgress(`جاري تحميل الصور: ${idx}/${selected.length} (${percent}%)`);
           try {
             const blob = await fetchDriveFileAsBlob(img.id, settings.appsScriptUrl, settings.apiKey);
             let mimeType = blob.type || 'image/jpeg';
@@ -319,52 +364,67 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
           }
         }
 
-        const canShareFiles = navigator.canShare && navigator.canShare({ files: fileArray });
-        if (fileArray.length > 0 && (canShareFiles || !navigator.canShare)) {
-          await navigator.share({
-            files: fileArray,
-            title: 'مشاركة عامة للصنف',
-            text: compiledMessage
-          });
-          sharedSuccessfully = true;
-          setShareSuccessMessage('✨ تم إطلاق نافذة المشاركة العامة بالصور والنص معاً بنجاح! شارك الصنف مع أي تطبيق أو شخص بكل سهولة.');
+        if (fileArray.length > 0) {
+          setShareProgress('جاري فتح قائمة تطبيقات المشاركة...');
+          let canShareFiles = false;
+          try {
+            if (navigator.canShare) {
+              canShareFiles = navigator.canShare({ files: fileArray });
+            } else {
+              canShareFiles = true;
+            }
+          } catch (e) {
+            canShareFiles = true;
+          }
+
+          if (canShareFiles) {
+            await navigator.share({
+              files: fileArray,
+              title: 'مشاركة عامة للصنف',
+              text: compiledMessage
+            });
+            sharedSuccessfully = true;
+            setShareSuccessMessage('✨ تم إطلاق نافذة المشاركة العامة بالصور والنص معاً بنجاح! شارك الصنف مع أي تطبيق أو شخص بكل سهولة.');
+          }
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error('Native share failed or canceled', err);
+        if (err && (err.name === 'AbortError' || err.message?.includes('share flow was canceled') || err.message?.includes('Share canceled'))) {
+          sharedSuccessfully = true;
+          setShareSuccessMessage('❌ تم إلغاء عملية المشاركة.');
+        }
       }
     }
 
     // Fallback 1: Try sharing just the text via navigator.share
     if (!sharedSuccessfully && navigator.share) {
       try {
+        setShareProgress('جاري مشاركة النص...');
         await navigator.share({
           title: 'مشاركة عامة للصنف',
           text: compiledMessage
         });
         sharedSuccessfully = true;
         setShareSuccessMessage('✨ تم إطلاق مشاركة النص بنجاح! لعدم توافق مشاركة ملفات الصور مع متصفحك الحالي، يرجى حفظ الصور المرفقة ونشرها يدوياً.');
-      } catch (err) {
+      } catch (err: any) {
         console.error('Sharing text failed:', err);
+        if (err && (err.name === 'AbortError' || err.message?.includes('share flow was canceled') || err.message?.includes('Share canceled'))) {
+          sharedSuccessfully = true;
+          setShareSuccessMessage('❌ تم إلغاء عملية المشاركة.');
+        }
       }
     }
 
     // Fallback 2: Copy and Download
     if (!sharedSuccessfully) {
+      setShareProgress('جاري نسخ النص وتنزيل الصور...');
       try {
         // Try to write image and text to clipboard if possible
         const clipboardData: Record<string, Blob> = {};
         clipboardData['text/plain'] = new Blob([compiledMessage], { type: 'text/plain' });
         
-        if (selected.length > 0) {
-          try {
-            const firstImg = selected[0];
-            const blob = await fetchDriveFileAsBlob(firstImg.id, settings.appsScriptUrl, settings.apiKey);
-            let mimeType = blob.type || 'image/jpeg';
-            if (mimeType === 'application/octet-stream') mimeType = 'image/jpeg';
-            clipboardData[mimeType] = blob;
-          } catch (e) {
-            console.error('Failed to prepare clipboard image:', e);
-          }
+        if (fileArray.length > 0) {
+          clipboardData[fileArray[0].type || 'image/jpeg'] = fileArray[0];
         }
         
         if (Object.keys(clipboardData).length > 1) {
@@ -381,7 +441,26 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
         }
       }
 
-      if (selected.length > 0) {
+      // Download from already loaded fileArray if possible
+      if (fileArray.length > 0) {
+        let saveIdx = 0;
+        for (const file of fileArray) {
+          saveIdx++;
+          setShareProgress(`جاري حفظ الصورة ${saveIdx}/${fileArray.length}...`);
+          try {
+            const url = window.URL.createObjectURL(file);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = file.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+          } catch (e) {
+            console.error('Error saving cached file:', e);
+          }
+        }
+      } else if (selected.length > 0) {
         await downloadSelectedImages();
       }
 
@@ -389,6 +468,7 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
     }
 
     setIsSharing(false);
+    setShareProgress('');
   };
 
   return (
@@ -545,11 +625,16 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
                 className="w-full bg-[#2D5A27] hover:bg-[#1e3d1a] disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-sm py-3.5 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-lg shadow-emerald-50 cursor-pointer"
               >
                 {isSharing ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="w-5 h-5 animate-spin shrink-0" />
+                    <span>{shareProgress || 'جاري التحميل...'}</span>
+                  </div>
                 ) : (
-                  <MessageSquare className="w-5 h-5 text-white fill-white" />
+                  <>
+                    <MessageSquare className="w-5 h-5 text-white fill-white" />
+                    <span>نشر فوري بقناة المتجر 📲</span>
+                  </>
                 )}
-                <span>نشر فوري بقناة المتجر 📲</span>
               </button>
 
               <button
@@ -559,11 +644,16 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
                 className="w-full bg-[#F27D26] hover:bg-[#d96a1a] disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-sm py-3.5 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-lg shadow-orange-50 cursor-pointer"
               >
                 {isSharing ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="w-5 h-5 animate-spin shrink-0" />
+                    <span>{shareProgress || 'جاري التحميل...'}</span>
+                  </div>
                 ) : (
-                  <Share2 className="w-5 h-5 text-white" />
+                  <>
+                    <Share2 className="w-5 h-5 text-white" />
+                    <span>مشاركة عامة لأي مكان 🌐</span>
+                  </>
                 )}
-                <span>مشاركة عامة لأي مكان 🌐</span>
               </button>
             </div>
           </div>
