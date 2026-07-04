@@ -120,9 +120,11 @@ export default function MediaManagerTab({ settings, onFoldersChanged }: MediaMan
       setSelectedFile(null);
       setCustomFileName('');
       
-      // If uploaded folder is current explorer active tab, refresh it
+      // Auto switch the file explorer tab to the folder that was uploaded to and trigger auto-refresh
       if (uploadFolderId === activeFolderId) {
         fetchFolderImages();
+      } else {
+        setActiveFolderId(uploadFolderId);
       }
     } catch (err: any) {
       console.error('File upload failed:', err);
@@ -325,17 +327,6 @@ export default function MediaManagerTab({ settings, onFoldersChanged }: MediaMan
                 <h2 className="text-lg font-bold text-gray-900 font-sans">متصفح ملفات جوجل درايف</h2>
                 <p className="text-xs text-gray-500 font-medium mt-0.5">تصفح صور منتجاتك وانسخ روابطها لمتجرك بسهولة</p>
               </div>
-              
-              {activeFolderId && explorerImages.length > 0 && (
-                <button
-                  onClick={fetchFolderImages}
-                  disabled={isLoadingExplorer}
-                  className="p-2 text-gray-400 hover:text-[#F27D26] bg-gray-50 border border-gray-150 rounded-xl hover:bg-gray-100 transition cursor-pointer"
-                  title="تحديث القائمة"
-                >
-                  <RefreshCw className={`w-4 h-4 ${isLoadingExplorer ? 'animate-spin text-[#F27D26]' : ''}`} />
-                </button>
-              )}
             </div>
 
             {/* Folder Tabs List */}

@@ -184,3 +184,51 @@ export async function uploadImageToDrive(
 
   return data.file;
 }
+
+/**
+ * Fetches a Google Drive file as a Blob, bypassing CORS issues by utilizing the Google Apps Script gateway.
+ */
+export async function fetchDriveFileAsBlob(fileId: string, appsScriptUrl: string, apiKey: string): Promise<Blob> {
+  if (!appsScriptUrl) {
+    throw new Error('الرجاء إعداد رابط Google Apps Script Web App في تبويب الإعدادات أولاً.');
+  }
+
+  try {
+    const response = await fetch(appsScriptUrl, {
+      method: 'POST',
+      mode: 'cors',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8',
+      },
+      body: JSON.stringify({
+        action: 'get_base64',
+        fileId,
+        apiKey,
+      }),
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.success !== false && data.base64) {
+        const byteCharacters = atob(data.base64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        return new Blob([byteArray], { type: data.mimeType || 'image/jpeg' });
+      }
+    }
+  } catch (err) {
+    console.warn('Google Apps Script get_base64 fetch failed, using fallback direct download:', err);
+  }
+
+  // Fallback: direct download URL
+  const downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+  const response = await fetch(downloadUrl);
+  if (!response.ok) {
+    throw new Error('فشل تحميل الصورة من درايف مباشرة.');
+  }
+  return await response.blob();
+}
+

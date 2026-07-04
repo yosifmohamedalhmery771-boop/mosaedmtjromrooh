@@ -2,10 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Folder, Send, MessageSquare, Clipboard, Download, Share2, 
-  CheckSquare, Square, Loader2, Sparkles, Check, AlertCircle, Info 
+  CheckSquare, Square, Loader2, Sparkles, Check, AlertCircle, Info, Search
 } from 'lucide-react';
 import { Settings, DriveFolder, DriveFile } from '../types';
-import { listFolderImages, getThumbnailUrl } from '../lib/drive';
+import { listFolderImages, getThumbnailUrl, fetchDriveFileAsBlob } from '../lib/drive';
 
 interface SharingTabProps {
   settings: Settings;
@@ -17,13 +17,22 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
   const [images, setImages] = useState<DriveFile[]>([]);
   const [selectedImageIds, setSelectedImageIds] = useState<string[]>([]);
   const [description, setDescription] = useState(initialSharedText);
+  const [searchQuery, setSearchQuery] = useState('');
   const [isLoadingImages, setIsLoadingImages] = useState(false);
   const [error, setError] = useState('');
+
+  // Derived filtered images
+  const filteredImages = images.filter(img => 
+    img.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
   
   // Feedback states
   const [isSharing, setIsSharing] = useState(false);
   const [shareSuccessMessage, setShareSuccessMessage] = useState('');
   const [copiedText, setCopiedText] = useState(false);
+
+  // Selected closing message index (0 to 4)
+  const [selectedClosingMsgIdx, setSelectedClosingMsgIdx] = useState<number>(0);
 
   // Sync initial shared text if Web Share Target API is triggered
   useEffect(() => {
@@ -88,8 +97,12 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
       ? `\n\nيسعدنا ويشرفنا استقبال طلباتكم مباشرة عبر الواتساب: \n${settings.whatsappOrderUrl}` 
       : '';
     
-    const poemBlock = settings.closingPoem 
-      ? `\n\n${settings.closingPoem}` 
+    const activeClosingMsg = settings.closingMessages && settings.closingMessages[selectedClosingMsgIdx]
+      ? settings.closingMessages[selectedClosingMsgIdx]
+      : settings.closingPoem;
+
+    const poemBlock = activeClosingMsg 
+      ? `\n\n${activeClosingMsg}` 
       : '';
 
     return `${formattedDesc}${channelBlock}${orderBlock}${poemBlock}`;
@@ -110,13 +123,10 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
     const selected = images.filter(img => selectedImageIds.includes(img.id));
     if (selected.length === 0) return;
 
+    let failedCount = 0;
     for (const img of selected) {
       try {
-        // Fetch original file content or download link
-        const downloadUrl = `https://drive.google.com/uc?export=download&id=${img.id}`;
-        const response = await fetch(downloadUrl);
-        const blob = await response.blob();
-        
+        const blob = await fetchDriveFileAsBlob(img.id, settings.appsScriptUrl, settings.apiKey);
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -127,13 +137,16 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
         window.URL.revokeObjectURL(url);
       } catch (err) {
         console.error('Error downloading image', img.name, err);
-        // Fallback: Open in new tab
-        window.open(`https://drive.google.com/uc?export=download&id=${img.id}`, '_blank');
+        failedCount++;
       }
+    }
+    
+    if (failedCount > 0) {
+      console.warn(`${failedCount} images failed to download from Google Drive.`);
     }
   };
 
-  const handleShareToWhatsApp = async () => {
+  const handleShareToChannel = async () => {
     if (!description.trim()) {
       alert('الرجاء إدخال وصف المنتج أولاً!');
       return;
@@ -145,27 +158,28 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
     const compiledMessage = getCompiledMessage();
     const selected = images.filter(img => selectedImageIds.includes(img.id));
 
-    // Try Web Share API with Files if on mobile and supported
+    // Try Web Share API with Files if supported
     if (navigator.share && navigator.canShare && selected.length > 0) {
       try {
         const fileArray: File[] = [];
         
-        // Fetch files to build Blob and File objects for native sharing
         for (const img of selected) {
-          const downloadUrl = `https://drive.google.com/uc?export=download&id=${img.id}`;
-          const res = await fetch(downloadUrl);
-          const blob = await res.blob();
-          const file = new File([blob], img.name, { type: blob.type || 'image/jpeg' });
-          fileArray.push(file);
+          try {
+            const blob = await fetchDriveFileAsBlob(img.id, settings.appsScriptUrl, settings.apiKey);
+            const file = new File([blob], img.name, { type: blob.type || 'image/jpeg' });
+            fileArray.push(file);
+          } catch (e) {
+            console.error('Error fetching file for share:', img.name, e);
+          }
         }
 
-        if (navigator.canShare({ files: fileArray })) {
+        if (fileArray.length > 0 && navigator.canShare({ files: fileArray })) {
           await navigator.share({
             files: fileArray,
-            title: 'منتج جديد من متجر أم روح',
+            title: 'نشر في قناة الواتساب',
             text: compiledMessage
           });
-          setShareSuccessMessage('تم تفعيل المشاركة المباشرة بنجاح! ✨');
+          setShareSuccessMessage('✨ تم إطلاق مشاركة النظام السريعة! يمكنك الآن اختيار تطبيق واتساب ونشر الصنف فوراً في قناتك دون أي تبويبات خارجية.');
           setIsSharing(false);
           return;
         }
@@ -174,29 +188,76 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
       }
     }
 
-    // Desktop/Fallback mechanism:
-    // 1. Copy text to clipboard
+    // Fallback/Desktop: copy + download completely in-app (no window.open)
     try {
       await navigator.clipboard.writeText(compiledMessage);
     } catch (err) {
       console.error('Clipboard copy failed', err);
     }
 
-    // 2. Download selected images
     if (selected.length > 0) {
       await downloadSelectedImages();
     }
 
-    // 3. Show dynamic instructions modal
-    setShareSuccessMessage('تم نسخ النص المنسق بالكامل وتنزيل الصور المحددة بجهازك! سيتم توجيهك الآن إلى واتساب لإرفاق الصور ولصق النص.');
+    setShareSuccessMessage('📥 تم نسخ وصف المنتج بالكامل وتنزيل الصور المحددة إلى جهازك تلقائياً وبأمان! جاهز للنشر الفوري في قناتك بالواتساب الآن دون فتح تبويبات إضافية.');
+    setIsSharing(false);
+  };
 
-    // 4. Open WhatsApp
-    setTimeout(() => {
-      // Use clean URL for Whatsapp
-      const waUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(compiledMessage)}`;
-      window.open(waUrl, '_blank');
-      setIsSharing(false);
-    }, 3000);
+  const handleShareGeneral = async () => {
+    if (!description.trim()) {
+      alert('الرجاء إدخال وصف المنتج أولاً!');
+      return;
+    }
+
+    setIsSharing(true);
+    setShareSuccessMessage('');
+
+    const compiledMessage = getCompiledMessage();
+    const selected = images.filter(img => selectedImageIds.includes(img.id));
+
+    // Try Web Share API with Files if supported
+    if (navigator.share && navigator.canShare && selected.length > 0) {
+      try {
+        const fileArray: File[] = [];
+        
+        for (const img of selected) {
+          try {
+            const blob = await fetchDriveFileAsBlob(img.id, settings.appsScriptUrl, settings.apiKey);
+            const file = new File([blob], img.name, { type: blob.type || 'image/jpeg' });
+            fileArray.push(file);
+          } catch (e) {
+            console.error('Error fetching file for share:', img.name, e);
+          }
+        }
+
+        if (fileArray.length > 0 && navigator.canShare({ files: fileArray })) {
+          await navigator.share({
+            files: fileArray,
+            title: 'مشاركة عامة للصنف',
+            text: compiledMessage
+          });
+          setShareSuccessMessage('✨ تم إطلاق نافذة المشاركة العامة بنجاح! شارك الصنف مع أي تطبيق أو شخص بكل سهولة.');
+          setIsSharing(false);
+          return;
+        }
+      } catch (err) {
+        console.error('Native share failed or canceled', err);
+      }
+    }
+
+    // Fallback: Copy and Download
+    try {
+      await navigator.clipboard.writeText(compiledMessage);
+    } catch (err) {
+      console.error('Clipboard copy failed', err);
+    }
+
+    if (selected.length > 0) {
+      await downloadSelectedImages();
+    }
+
+    setShareSuccessMessage('📋 تم نسخ النص النهائي للمنشور وتنزيل كافة الصور المحددة في جهازك! يمكنك الآن لصقها ومشاركتها في أي مكان أو تطبيق تريده.');
+    setIsSharing(false);
   };
 
   return (
@@ -263,6 +324,48 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
               </p>
             </div>
 
+            {/* 5 Types of Closing Messages Selection */}
+            <div className="space-y-2 pt-2 border-t border-gray-50">
+              <label className="block text-xs text-gray-500 mb-1 font-bold">اختر نوع الرسالة الختامية للمنشور</label>
+              <div className="grid grid-cols-1 gap-2 max-h-[190px] overflow-y-auto custom-scrollbar p-0.5">
+                {[
+                  { name: "القصيدة والترحيب التراثي", desc: "التعبير الشعري الرفيع والترحيب الأصيل" },
+                  { name: "خصم وعرض خاص", desc: "أكواد الخصم لتنشيط المبيعات" },
+                  { name: "طريقة الطلب الفوري", desc: "تعليمات الشراء والتوصيل المباشر" },
+                  { name: "متابعة قناة الواتساب", desc: "دعوة للانضمام لقناة المتجر الرسمية" },
+                  { name: "جودة وضمان الصنف", desc: "تأكيد الموثوقية والخامات الفاخرة" }
+                ].map((msgType, idx) => {
+                  const isSelected = selectedClosingMsgIdx === idx;
+                  const textPreview = settings.closingMessages?.[idx] || "";
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => setSelectedClosingMsgIdx(idx)}
+                      className={`text-right p-3 rounded-xl border text-xs transition cursor-pointer flex flex-col gap-1 w-full ${
+                        isSelected
+                          ? "bg-orange-50/70 border-[#F27D26] text-gray-950 ring-2 ring-[#F27D26]/10"
+                          : "bg-white border-gray-150 text-gray-600 hover:bg-gray-50/50"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full">
+                        <span className="font-bold flex items-center gap-1.5">
+                          <span className={`w-2.5 h-2.5 rounded-full ${isSelected ? "bg-[#F27D26]" : "bg-gray-300"}`} />
+                          {msgType.name}
+                        </span>
+                        <span className="text-[9px] text-gray-400">{msgType.desc}</span>
+                      </div>
+                      {textPreview && (
+                        <p className="text-[10px] text-gray-400 truncate w-full mt-0.5" dir="rtl">
+                          {textPreview.replace(/\n/g, " ")}
+                        </p>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* Quick Actions Panel */}
             <div className="flex flex-wrap gap-2 pt-2 border-t border-gray-50">
               <button
@@ -287,20 +390,36 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
               </button>
             </div>
 
-            {/* Big WhatsApp share trigger */}
-            <button
-              type="button"
-              onClick={handleShareToWhatsApp}
-              disabled={isSharing || !description.trim()}
-              className="w-full bg-[#2D5A27] hover:bg-[#1e3d1a] disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-sm py-3.5 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-lg shadow-emerald-100 cursor-pointer"
-            >
-              {isSharing ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
-              ) : (
-                <MessageSquare className="w-5 h-5 text-white fill-white" />
-              )}
-              <span>مشاركة عبر الواتساب</span>
-            </button>
+            {/* Split share triggers */}
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={handleShareToChannel}
+                disabled={isSharing || !description.trim()}
+                className="w-full bg-[#2D5A27] hover:bg-[#1e3d1a] disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-sm py-3.5 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-lg shadow-emerald-50 cursor-pointer"
+              >
+                {isSharing ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <MessageSquare className="w-5 h-5 text-white fill-white" />
+                )}
+                <span>نشر فوري بقناة المتجر 📲</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleShareGeneral}
+                disabled={isSharing || !description.trim()}
+                className="w-full bg-[#F27D26] hover:bg-[#d96a1a] disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-sm py-3.5 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-lg shadow-orange-50 cursor-pointer"
+              >
+                {isSharing ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <Share2 className="w-5 h-5 text-white" />
+                )}
+                <span>مشاركة عامة لأي مكان 🌐</span>
+              </button>
+            </div>
           </div>
 
           {/* User instruction banner */}
@@ -346,6 +465,22 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
               )}
             </div>
 
+            {/* Search Input */}
+            {!isLoadingImages && !error && selectedFolder && images.length > 0 && (
+              <div className="relative mb-3">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  placeholder="ابحث باسم الصورة..."
+                  className="w-full bg-gray-50 border border-gray-200 focus:border-[#F27D26] focus:ring-2 focus:ring-[#F27D26]/10 rounded-xl pl-10 pr-4 py-2.5 text-xs text-gray-900 outline-none transition"
+                />
+                <div className="absolute inset-y-0 left-3.5 flex items-center pointer-events-none text-gray-400">
+                  <Search className="w-4 h-4" />
+                </div>
+              </div>
+            )}
+
             {/* Content Container */}
             <div className="flex-1 flex flex-col">
               
@@ -384,10 +519,19 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
                 </div>
               )}
 
+              {/* Empty Search Results state */}
+              {!isLoadingImages && !error && selectedFolder && images.length > 0 && filteredImages.length === 0 && (
+                <div className="flex-1 flex flex-col items-center justify-center text-center py-20 text-gray-400 border border-dashed border-gray-200 rounded-3xl">
+                  <Search className="w-14 h-14 text-orange-200/50 mb-2" />
+                  <p className="text-sm font-bold text-gray-700">لم يتم العثور على صور مطابقة للبحث!</p>
+                  <p className="text-xs text-gray-400 mt-1">يرجى التأكد من كتابة الاسم بشكل صحيح أو استخدام كلمات بحث مختلفة.</p>
+                </div>
+              )}
+
               {/* Grid Layout of photos */}
-              {!isLoadingImages && !error && images.length > 0 && (
+              {!isLoadingImages && !error && filteredImages.length > 0 && (
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 max-h-[480px] overflow-y-auto custom-scrollbar p-1">
-                  {images.map(img => {
+                  {filteredImages.map(img => {
                     const isSelected = selectedImageIds.includes(img.id);
                     const thumbnail = getThumbnailUrl(img.id);
                     
