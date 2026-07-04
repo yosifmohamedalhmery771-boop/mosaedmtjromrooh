@@ -12,12 +12,10 @@ import {
 
 interface MediaManagerTabProps {
   settings: Settings;
-  accessToken: string | null;
-  onLoginRequest: () => void;
   onFoldersChanged: () => void;
 }
 
-export default function MediaManagerTab({ settings, accessToken, onLoginRequest, onFoldersChanged }: MediaManagerTabProps) {
+export default function MediaManagerTab({ settings, onFoldersChanged }: MediaManagerTabProps) {
   // Explorer state
   const [activeFolderId, setActiveFolderId] = useState<string>('');
   const [explorerImages, setExplorerImages] = useState<DriveFile[]>([]);
@@ -53,23 +51,23 @@ export default function MediaManagerTab({ settings, accessToken, onLoginRequest,
       return;
     }
 
-    if (!accessToken) {
-      return;
-    }
-
     fetchFolderImages();
-  }, [activeFolderId, accessToken]);
+  }, [activeFolderId, settings.appsScriptUrl, settings.apiKey]);
 
   const fetchFolderImages = async () => {
-    if (!activeFolderId || !accessToken) return;
+    if (!activeFolderId) return;
+    if (!settings.appsScriptUrl) {
+      setExplorerError('يرجى تهيئة رابط اتصال Google Apps Script في الإعدادات أولاً لعرض صور المجلد.');
+      return;
+    }
     setIsLoadingExplorer(true);
     setExplorerError('');
     try {
-      const files = await listFolderImages(activeFolderId, accessToken);
+      const files = await listFolderImages(activeFolderId, settings.appsScriptUrl, settings.apiKey);
       setExplorerImages(files);
     } catch (err: any) {
       console.error('Explorer fetch error:', err);
-      setExplorerError(err?.message || 'فشل جلب الملفات من درايف. تأكد من صحة معرف المجلد وصلاحية حساب جوجل.');
+      setExplorerError(err?.message || 'فشل جلب الملفات من درايف. تأكد من صحة إعدادات Google Apps Script ومعرّف المجلد.');
     } finally {
       setIsLoadingExplorer(false);
     }
@@ -93,8 +91,8 @@ export default function MediaManagerTab({ settings, accessToken, onLoginRequest,
     setUploadError('');
     setUploadSuccess(false);
 
-    if (!accessToken) {
-      setUploadError('يرجى تسجيل الدخول أولاً للرفع على درايف.');
+    if (!settings.appsScriptUrl) {
+      setUploadError('يرجى تهيئة رابط اتصال Google Apps Script في الإعدادات أولاً.');
       return;
     }
     if (!uploadFolderId) {
@@ -116,7 +114,7 @@ export default function MediaManagerTab({ settings, accessToken, onLoginRequest,
       const originalExt = selectedFile.name.substring(selectedFile.name.lastIndexOf('.'));
       const uploadName = customFileName.trim() + originalExt;
 
-      await uploadImageToDrive(uploadFolderId, selectedFile, uploadName, accessToken);
+      await uploadImageToDrive(uploadFolderId, selectedFile, uploadName, settings.appsScriptUrl, settings.apiKey);
       
       setUploadSuccess(true);
       setSelectedFile(null);
@@ -148,7 +146,10 @@ export default function MediaManagerTab({ settings, accessToken, onLoginRequest,
 
   // Delete Drive file handler (Workspace integration mandate confirmation!)
   const handleDeleteFile = async (fileId: string, fileName: string) => {
-    if (!accessToken) return;
+    if (!settings.appsScriptUrl) {
+      alert('يرجى تهيئة رابط اتصال Google Apps Script أولاً.');
+      return;
+    }
     
     // EXPLICIT CONFIRM DIALOG as mandated by system instructions!
     const isConfirmed = window.confirm(
@@ -157,7 +158,7 @@ export default function MediaManagerTab({ settings, accessToken, onLoginRequest,
     if (!isConfirmed) return;
 
     try {
-      await deleteDriveFile(fileId, accessToken);
+      await deleteDriveFile(fileId, settings.appsScriptUrl, settings.apiKey);
       // Remove from state immediately
       setExplorerImages(prev => prev.filter(f => f.id !== fileId));
     } catch (err: any) {
@@ -176,7 +177,7 @@ export default function MediaManagerTab({ settings, accessToken, onLoginRequest,
   };
 
   const handleRenameSubmit = async () => {
-    if (!accessToken || !editingFileId || !editingFileName.trim()) return;
+    if (!settings.appsScriptUrl || !editingFileId || !editingFileName.trim()) return;
 
     // Fetch original file details to restore extension
     const file = explorerImages.find(f => f.id === editingFileId);
@@ -188,7 +189,7 @@ export default function MediaManagerTab({ settings, accessToken, onLoginRequest,
       const originalExt = dotIndex !== -1 ? file.name.substring(dotIndex) : '';
       const finalName = editingFileName.trim() + originalExt;
 
-      await renameDriveFile(editingFileId, finalName, accessToken);
+      await renameDriveFile(editingFileId, finalName, settings.appsScriptUrl, settings.apiKey);
       
       // Update local state
       setExplorerImages(prev => prev.map(f => f.id === editingFileId ? { ...f, name: finalName } : f));
@@ -206,23 +207,16 @@ export default function MediaManagerTab({ settings, accessToken, onLoginRequest,
   return (
     <div className="space-y-8" id="media-manager-tab-container">
       
-      {/* Auth Guard Banner */}
-      {!accessToken && (
+      {/* Settings Warning Banner */}
+      {!settings.appsScriptUrl && (
         <div className="bg-amber-50 border border-amber-100 rounded-2xl p-6 flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <AlertCircle className="w-8 h-8 text-amber-600 shrink-0" />
             <div>
-              <h3 className="text-sm font-bold text-amber-900">الوصول إلى مدير الوسائط وصور درايف غير مفعّل</h3>
-              <p className="text-xs text-amber-700/90 mt-1 font-medium">يرجى تسجيل الدخول بحساب جوجل للبدء برفع وتعديل وحذف الصور مباشرة من لوحة التحكم.</p>
+              <h3 className="text-sm font-bold text-amber-900">رابط ربط السحابة غير مفعّل</h3>
+              <p className="text-xs text-amber-700/90 mt-1 font-medium">يرجى إدخال رابط Google Apps Script Web App في تبويب الإعدادات لرفع وإدارة وصيانة صورك السحابية بنجاح.</p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onLoginRequest}
-            className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold py-2.5 px-5 rounded-xl transition shrink-0 shadow-md cursor-pointer"
-          >
-            تسجيل الدخول الآن
-          </button>
         </div>
       )}
 
@@ -311,7 +305,7 @@ export default function MediaManagerTab({ settings, accessToken, onLoginRequest,
 
               <button
                 type="submit"
-                disabled={isUploading || !accessToken || !selectedFile}
+                disabled={isUploading || !settings.appsScriptUrl || !selectedFile}
                 className="w-full bg-[#F27D26] hover:bg-[#d96a1a] disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-sm py-3 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-lg shadow-orange-100 cursor-pointer"
               >
                 {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4" />}

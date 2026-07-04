@@ -9,6 +9,8 @@ export interface Settings {
   whatsappChannelUrl: string;
   whatsappOrderUrl: string;
   closingPoem: string;
+  appsScriptUrl: string;
+  apiKey: string;
 }
 
 export interface DriveFile {

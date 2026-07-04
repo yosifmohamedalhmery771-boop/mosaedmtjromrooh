@@ -39,113 +39,148 @@ export function getThumbnailUrl(fileId: string): string {
 }
 
 /**
- * Helper to get authorization headers.
+ * Converts a File object to base64 string
  */
-function getHeaders(token: string) {
-  return {
-    Authorization: `Bearer ${token}`,
-    'Content-Type': 'application/json',
-  };
+export function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = error => reject(error);
+  });
 }
 
 /**
- * Lists image files inside a specific Google Drive folder.
+ * Lists image files inside a specific Google Drive folder using Google Apps Script Web App.
  */
-export async function listFolderImages(folderId: string, token: string): Promise<DriveFile[]> {
-  const q = `'${folderId}' in parents and mimeType contains 'image/' and trashed = false`;
-  const fields = 'files(id, name, mimeType, thumbnailLink, webViewLink, webContentLink)';
-  const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent(fields)}&pageSize=100`;
+export async function listFolderImages(folderId: string, appsScriptUrl: string, apiKey: string): Promise<DriveFile[]> {
+  if (!appsScriptUrl) {
+    throw new Error('الرجاء إعداد رابط Google Apps Script Web App في تبويب الإعدادات أولاً.');
+  }
+
+  const url = `${appsScriptUrl}?action=list&folderId=${encodeURIComponent(folderId)}&apiKey=${encodeURIComponent(apiKey)}`;
 
   const response = await fetch(url, {
     method: 'GET',
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
+    mode: 'cors',
   });
 
   if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(errorData?.error?.message || 'Failed to fetch files from Google Drive');
+    throw new Error(`فشل الاتصال بـ Apps Script (رمز الاستجابة: ${response.status})`);
   }
 
   const data = await response.json();
+  if (data && data.success === false) {
+    throw new Error(data.error || 'فشل جلب الصور من Google Drive عبر Apps Script');
+  }
+
   return data.files || [];
 }
 
 /**
- * Renames a Google Drive file.
+ * Renames a Google Drive file using Google Apps Script Web App.
  */
-export async function renameDriveFile(fileId: string, newName: string, token: string): Promise<void> {
-  const url = `https://www.googleapis.com/drive/v3/files/${fileId}`;
-  
-  const response = await fetch(url, {
-    method: 'PATCH',
-    headers: getHeaders(token),
+export async function renameDriveFile(fileId: string, newName: string, appsScriptUrl: string, apiKey: string): Promise<void> {
+  if (!appsScriptUrl) {
+    throw new Error('الرجاء إعداد رابط Google Apps Script Web App في تبويب الإعدادات أولاً.');
+  }
+
+  const response = await fetch(appsScriptUrl, {
+    method: 'POST',
+    mode: 'cors',
+    headers: {
+      'Content-Type': 'text/plain;charset=utf-8', // Plain text prevents CORS preflight issues in some GAS setups
+    },
     body: JSON.stringify({
-      name: newName,
+      action: 'rename',
+      fileId,
+      newName,
+      apiKey,
     }),
   });
 
   if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(errorData?.error?.message || 'Failed to rename file');
+    throw new Error('فشل إرسال طلب تعديل الاسم إلى Google Apps Script');
+  }
+
+  const data = await response.json();
+  if (data && data.success === false) {
+    throw new Error(data.error || 'فشل تعديل الاسم في Google Drive');
   }
 }
 
 /**
- * Deletes a Google Drive file.
+ * Deletes a Google Drive file using Google Apps Script Web App.
  */
-export async function deleteDriveFile(fileId: string, token: string): Promise<void> {
-  const url = `https://www.googleapis.com/drive/v3/files/${fileId}`;
-  
-  const response = await fetch(url, {
-    method: 'DELETE',
+export async function deleteDriveFile(fileId: string, appsScriptUrl: string, apiKey: string): Promise<void> {
+  if (!appsScriptUrl) {
+    throw new Error('الرجاء إعداد رابط Google Apps Script Web App في تبويب الإعدادات أولاً.');
+  }
+
+  const response = await fetch(appsScriptUrl, {
+    method: 'POST',
+    mode: 'cors',
     headers: {
-      Authorization: `Bearer ${token}`,
+      'Content-Type': 'text/plain;charset=utf-8',
     },
+    body: JSON.stringify({
+      action: 'delete',
+      fileId,
+      apiKey,
+    }),
   });
 
   if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(errorData?.error?.message || 'Failed to delete file');
+    throw new Error('فشل إرسال طلب الحذف إلى Google Apps Script');
+  }
+
+  const data = await response.json();
+  if (data && data.success === false) {
+    throw new Error(data.error || 'فشل حذف الملف من Google Drive');
   }
 }
 
 /**
- * Uploads an image file to a Google Drive folder.
+ * Uploads an image file to a Google Drive folder using Google Apps Script Web App.
  */
 export async function uploadImageToDrive(
   folderId: string,
   file: File,
   customName: string,
-  token: string
+  appsScriptUrl: string,
+  apiKey: string
 ): Promise<DriveFile> {
-  const metadata = {
-    name: customName || file.name,
-    parents: [folderId],
-  };
+  if (!appsScriptUrl) {
+    throw new Error('الرجاء إعداد رابط Google Apps Script Web App في تبويب الإعدادات أولاً.');
+  }
 
-  const form = new FormData();
-  form.append(
-    'metadata',
-    new Blob([JSON.stringify(metadata)], { type: 'application/json' })
-  );
-  form.append('file', file);
+  const fileBase64 = await fileToBase64(file);
+  const fileName = customName.trim() ? customName.trim() : file.name;
 
-  const url = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,thumbnailLink,webViewLink,webContentLink';
-
-  const response = await fetch(url, {
+  const response = await fetch(appsScriptUrl, {
     method: 'POST',
+    mode: 'cors',
     headers: {
-      Authorization: `Bearer ${token}`,
+      'Content-Type': 'text/plain;charset=utf-8',
     },
-    body: form,
+    body: JSON.stringify({
+      action: 'upload',
+      folderId,
+      fileName,
+      fileBase64,
+      mimeType: file.type || 'image/jpeg',
+      apiKey,
+    }),
   });
 
   if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(errorData?.error?.message || 'Failed to upload image to Google Drive');
+    throw new Error('فشل إرسال ملف الصورة لـ Google Apps Script');
   }
 
-  return response.json();
+  const data = await response.json();
+  if (data && data.success === false) {
+    throw new Error(data.error || 'فشل رفع وحفظ الصورة في Google Drive');
+  }
+
+  return data.file;
 }

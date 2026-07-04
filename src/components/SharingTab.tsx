@@ -9,12 +9,10 @@ import { listFolderImages, getThumbnailUrl } from '../lib/drive';
 
 interface SharingTabProps {
   settings: Settings;
-  accessToken: string | null;
-  onLoginRequest: () => void;
   initialSharedText?: string;
 }
 
-export default function SharingTab({ settings, accessToken, onLoginRequest, initialSharedText = '' }: SharingTabProps) {
+export default function SharingTab({ settings, initialSharedText = '' }: SharingTabProps) {
   const [selectedFolder, setSelectedFolder] = useState<string>('');
   const [images, setImages] = useState<DriveFile[]>([]);
   const [selectedImageIds, setSelectedImageIds] = useState<string[]>([]);
@@ -42,8 +40,8 @@ export default function SharingTab({ settings, accessToken, onLoginRequest, init
       return;
     }
 
-    if (!accessToken) {
-      setError('الرجاء تسجيل الدخول أولاً باستخدام حساب جوجل المخول للوصول إلى Google Drive.');
+    if (!settings.appsScriptUrl) {
+      setError('يرجى تهيئة رابط اتصال Google Apps Script في الإعدادات أولاً لعرض صور المجلد.');
       return;
     }
 
@@ -52,18 +50,18 @@ export default function SharingTab({ settings, accessToken, onLoginRequest, init
       setError('');
       setSelectedImageIds([]);
       try {
-        const driveImages = await listFolderImages(selectedFolder, accessToken);
+        const driveImages = await listFolderImages(selectedFolder, settings.appsScriptUrl, settings.apiKey);
         setImages(driveImages);
       } catch (err: any) {
         console.error('Error fetching images:', err);
-        setError(err?.message || 'فشل جلب الصور من المجلد المحدد. تأكد من إعدادات المشاركة للمجلد وصحة معرّفه.');
+        setError(err?.message || 'فشل جلب الصور من المجلد المحدد. تأكد من إعدادات الـ Web App والـ API Key وصحة معرّف المجلد.');
       } finally {
         setIsLoadingImages(false);
       }
     };
 
     fetchImages();
-  }, [selectedFolder, accessToken]);
+  }, [selectedFolder, settings.appsScriptUrl, settings.apiKey]);
 
   const toggleImageSelection = (id: string) => {
     setSelectedImageIds(prev => 
@@ -204,23 +202,16 @@ export default function SharingTab({ settings, accessToken, onLoginRequest, init
   return (
     <div className="space-y-8" id="sharing-tab-container">
       
-      {/* Auth Guard Banner */}
-      {!accessToken && (
+      {/* Settings Warning Banner */}
+      {!settings.appsScriptUrl && (
         <div className="bg-amber-50 border border-amber-100 rounded-2xl p-6 flex flex-col md:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <AlertCircle className="w-8 h-8 text-amber-600 shrink-0" />
             <div>
-              <h3 className="text-sm font-bold text-amber-900">الوصول إلى صور Google Drive غير مفعّل</h3>
-              <p className="text-xs text-amber-700/90 mt-1 font-medium">يتطلب هذا التبويب تسجيل الدخول بحساب جوجل للوصول إلى المجلدات والملفات المخزنة وعرض صور منتجاتك.</p>
+              <h3 className="text-sm font-bold text-amber-900">رابط ربط السحابة غير مفعّل</h3>
+              <p className="text-xs text-amber-700/90 mt-1 font-medium">يرجى إدخال رابط Google Apps Script Web App في تبويب الإعدادات للبدء بربط التطبيق والوصول المباشر دون تعقيدات تسجيل الدخول.</p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onLoginRequest}
-            className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold py-2.5 px-5 rounded-xl transition shrink-0 shadow-md cursor-pointer"
-          >
-            تسجيل الدخول الآن
-          </button>
         </div>
       )}
 
@@ -300,7 +291,7 @@ export default function SharingTab({ settings, accessToken, onLoginRequest, init
             <button
               type="button"
               onClick={handleShareToWhatsApp}
-              disabled={isSharing || !accessToken || !description.trim()}
+              disabled={isSharing || !description.trim()}
               className="w-full bg-[#2D5A27] hover:bg-[#1e3d1a] disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-sm py-3.5 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-lg shadow-emerald-100 cursor-pointer"
             >
               {isSharing ? (
