@@ -193,6 +193,33 @@ export async function fetchDriveFileAsBlob(fileId: string, appsScriptUrl: string
     throw new Error('الرجاء إعداد رابط Google Apps Script Web App في تبويب الإعدادات أولاً.');
   }
 
+  // 1. Try GET request first (Highly recommended for Google Apps Script to bypass CORS/preflight redirect issues)
+  try {
+    const url = `${appsScriptUrl}?action=get_base64&fileId=${encodeURIComponent(fileId)}&apiKey=${encodeURIComponent(apiKey)}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      mode: 'cors',
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.success !== false && data.base64) {
+        const byteCharacters = atob(data.base64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        return new Blob([byteArray], { type: data.mimeType || 'image/jpeg' });
+      } else if (data && data.success === false) {
+        console.warn('Apps Script returned success=false for GET get_base64:', data.error);
+      }
+    }
+  } catch (err) {
+    console.warn('Google Apps Script get_base64 GET fetch failed, trying POST:', err);
+  }
+
+  // 2. Try POST request as a secondary option
   try {
     const response = await fetch(appsScriptUrl, {
       method: 'POST',
@@ -220,15 +247,20 @@ export async function fetchDriveFileAsBlob(fileId: string, appsScriptUrl: string
       }
     }
   } catch (err) {
-    console.warn('Google Apps Script get_base64 fetch failed, using fallback direct download:', err);
+    console.warn('Google Apps Script get_base64 POST fetch failed:', err);
   }
 
-  // Fallback: direct download URL
-  const downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
-  const response = await fetch(downloadUrl);
-  if (!response.ok) {
-    throw new Error('فشل تحميل الصورة من درايف مباشرة.');
+  // 3. Fallback: direct download URL
+  try {
+    const downloadUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
+    const response = await fetch(downloadUrl);
+    if (response.ok) {
+      return await response.blob();
+    }
+  } catch (err) {
+    console.warn('Direct download URL fetch failed due to CORS:', err);
   }
-  return await response.blob();
+
+  throw new Error('فشل تحميل الصورة من درايف بسبب قيود CORS أو حظر الاتصال.');
 }
 

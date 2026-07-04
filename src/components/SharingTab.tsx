@@ -263,56 +263,27 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
     const selected = images.filter(img => selectedImageIds.includes(img.id));
     const fileArray: File[] = [];
 
-    // Gather preloaded files or load missing ones
-    const missing = selected.filter(img => !loadedFiles[img.id] || loadedFiles[img.id].isLoading);
-    if (missing.length > 0) {
-      let idx = 0;
-      for (const img of selected) {
-        idx++;
-        const cached = loadedFiles[img.id];
-        if (cached && !cached.isLoading && cached.file && cached.file.size > 0) {
-          fileArray.push(cached.file);
-          continue;
-        }
-
-        const percent = Math.round(((idx - 1) / selected.length) * 100);
-        setShareProgress(`جاري تحميل الصور: ${idx}/${selected.length} (${percent}%)`);
-        try {
-          const blob = await fetchDriveFileAsBlob(img.id, settings.appsScriptUrl, settings.apiKey);
-          const file = createSafeFileFromBlob(blob, idx - 1);
-          fileArray.push(file);
-          setLoadedFiles(prev => ({
-            ...prev,
-            [img.id]: { file, isLoading: false }
-          }));
-        } catch (e) {
-          console.error('Error fetching file for share:', img.name, e);
-        }
-      }
-    } else {
-      let idx = 0;
-      for (const img of selected) {
-        const cached = loadedFiles[img.id];
-        if (cached?.file && cached.file.size > 0) {
-          fileArray.push(cached.file);
-        }
-        idx++;
-      }
-    }
-
-    // 1. Copy description to clipboard
+    // 1. Copy description to clipboard instantly (Synchronous, preserves user gesture)
     try {
       await navigator.clipboard.writeText(compiledMessage);
     } catch (err) {
       console.error('Clipboard copy failed:', err);
     }
 
-    // 2. Download all selected images directly to the user's gallery
+    // 2. Separate already preloaded files and missing ones
+    const preloaded = selected.filter(img => loadedFiles[img.id] && !loadedFiles[img.id].isLoading && !loadedFiles[img.id].error);
+    const missing = selected.filter(img => !loadedFiles[img.id] || loadedFiles[img.id].isLoading || loadedFiles[img.id].error);
+
+    for (const img of preloaded) {
+      const cached = loadedFiles[img.id];
+      if (cached?.file && cached.file.size > 0) {
+        fileArray.push(cached.file);
+      }
+    }
+
+    // 3. Download already preloaded images directly to user's gallery synchronously
     if (fileArray.length > 0) {
-      let saveIdx = 0;
       for (const file of fileArray) {
-        saveIdx++;
-        setShareProgress(`جاري حفظ الصورة ${saveIdx}/${fileArray.length}...`);
         try {
           const url = window.URL.createObjectURL(file);
           const a = document.createElement('a');
@@ -326,32 +297,71 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
           console.error('Error saving cached file:', e);
         }
       }
-    } else if (selected.length > 0) {
-      await downloadSelectedImages();
     }
 
-    // 3. Set nice success notification
-    setShareSuccessMessage('📥 تم نسخ وصف المنتج بالكامل وحفظ كافة الصور المحددة في جهازك بنجاح! جاري فتح قناتك بالواتساب الآن لتتمكن من لصق المنشور وإرفاق الصور مباشرة كملفات مكتملة.');
-
-    // 4. Clean Redirect to store channel URL (correct https scheme)
+    // 4. Redirect to store channel URL IMMEDIATELY to preserve user gesture
+    // This is 100% vital for PWA standalone modes to open WhatsApp app directly instead of a blank screen.
     const channelUrl = settings.whatsappChannelUrl.trim();
     let targetUrl = channelUrl;
     if (!/^https?:\/\//i.test(targetUrl)) {
       targetUrl = `https://${targetUrl}`;
     }
 
-    setTimeout(() => {
-      try {
-        const newWindow = window.open(targetUrl, '_blank');
-        if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
-          window.location.href = targetUrl;
+    let openedWindow: Window | null = null;
+    try {
+      openedWindow = window.open(targetUrl, '_blank');
+    } catch (e) {
+      console.warn('Immediate window.open failed, fallback to anchor:', e);
+    }
+
+    if (!openedWindow) {
+      const link = document.createElement('a');
+      link.href = targetUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    // 5. Fetch and download any missing images in the background so redirection is never blocked
+    if (missing.length > 0) {
+      setShareProgress('جاري تحميل وحفظ الصور المتبقية في الخلفية...');
+      (async () => {
+        let idx = 0;
+        for (const img of missing) {
+          idx++;
+          try {
+            const blob = await fetchDriveFileAsBlob(img.id, settings.appsScriptUrl, settings.apiKey);
+            const file = createSafeFileFromBlob(blob, selected.indexOf(img));
+            
+            // Download immediately
+            const url = window.URL.createObjectURL(file);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = file.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+
+            setLoadedFiles(prev => ({
+              ...prev,
+              [img.id]: { file, isLoading: false }
+            }));
+          } catch (e) {
+            console.error('Error downloading missing file in background:', img.name, e);
+          }
         }
-      } catch (e) {
-        window.location.href = targetUrl;
-      }
+        setShareSuccessMessage('📥 تم نسخ وصف المنتج بالكامل وحفظ كافة الصور المحددة في جهازك بنجاح! يرجى لصق المنشور وإرفاق الصور في قناتك بالواتساب.');
+        setIsSharing(false);
+        setShareProgress('');
+      })();
+    } else {
+      setShareSuccessMessage('📥 تم نسخ وصف المنتج بالكامل وحفظ كافة الصور المحددة في جهازك بنجاح! يرجى لصق المنشور وإرفاق الصور في قناتك بالواتساب.');
       setIsSharing(false);
       setShareProgress('');
-    }, 1200);
+    }
   };
 
   const handleShareGeneral = async () => {
@@ -362,48 +372,18 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
 
     setIsSharing(true);
     setShareSuccessMessage('');
-    setShareProgress('جاري تحضير البيانات...');
+    setShareProgress('جاري تحضير البيانات للمشاركة...');
 
     const compiledMessage = getCompiledMessage();
     const selected = images.filter(img => selectedImageIds.includes(img.id));
-
     let sharedSuccessfully = false;
     const fileArray: File[] = [];
 
-    // Gather preloaded files or load missing ones
-    const missing = selected.filter(img => !loadedFiles[img.id] || loadedFiles[img.id].isLoading);
-    if (missing.length > 0) {
-      let idx = 0;
-      for (const img of selected) {
-        idx++;
-        const cached = loadedFiles[img.id];
-        if (cached && !cached.isLoading && cached.file && cached.file.size > 0) {
-          fileArray.push(cached.file);
-          continue;
-        }
-
-        const percent = Math.round(((idx - 1) / selected.length) * 100);
-        setShareProgress(`جاري تحميل الصور المتبقية: ${idx}/${selected.length} (${percent}%)`);
-        try {
-          const blob = await fetchDriveFileAsBlob(img.id, settings.appsScriptUrl, settings.apiKey);
-          const file = createSafeFileFromBlob(blob, idx - 1);
-          fileArray.push(file);
-          setLoadedFiles(prev => ({
-            ...prev,
-            [img.id]: { file, isLoading: false }
-          }));
-        } catch (e) {
-          console.error('Error fetching file for share:', img.name, e);
-        }
-      }
-    } else {
-      let idx = 0;
-      for (const img of selected) {
-        const cached = loadedFiles[img.id];
-        if (cached?.file && cached.file.size > 0) {
-          fileArray.push(cached.file);
-        }
-        idx++;
+    // Gather preloaded files
+    for (const img of selected) {
+      const cached = loadedFiles[img.id];
+      if (cached?.file && cached.file.size > 0 && !cached.isLoading && !cached.error) {
+        fileArray.push(cached.file);
       }
     }
 
@@ -414,7 +394,7 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
       console.warn('Silent clipboard copy before share failed:', e);
     }
 
-    // Try Web Share API with Files if supported
+    // Try Web Share API with Files if supported (completely synchronous, preserving user gesture!)
     if (navigator.share && fileArray.length > 0) {
       try {
         setShareProgress('جاري فتح قائمة تطبيقات المشاركة...');
@@ -690,7 +670,7 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
               <button
                 type="button"
                 onClick={handleShareGeneral}
-                disabled={isSharing || !description.trim()}
+                disabled={isSharing || !description.trim() || (selectedImageIds.length > 0 && overallPercent < 100)}
                 className="w-full bg-[#F27D26] hover:bg-[#d96a1a] disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold text-sm py-3.5 px-4 rounded-xl flex items-center justify-center gap-2.5 transition shadow-lg shadow-orange-50 cursor-pointer"
               >
                 {isSharing ? (
@@ -701,7 +681,11 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
                 ) : (
                   <>
                     <Share2 className="w-5 h-5 text-white" />
-                    <span>مشاركة عامة لأي مكان 🌐</span>
+                    <span>
+                      {selectedImageIds.length > 0 && overallPercent < 100 
+                        ? `جاري تجهيز الصور للمشاركة (${overallPercent}%) ⏳` 
+                        : 'مشاركة عامة لأي مكان 🌐'}
+                    </span>
                   </>
                 )}
               </button>
