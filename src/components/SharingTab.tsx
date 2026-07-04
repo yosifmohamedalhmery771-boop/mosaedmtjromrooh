@@ -34,6 +34,18 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
   // Selected closing message index (0 to 4)
   const [selectedClosingMsgIdx, setSelectedClosingMsgIdx] = useState<number>(0);
 
+  const [isInIframe, setIsInIframe] = useState(false);
+  const [shareSupported, setShareSupported] = useState(true);
+
+  useEffect(() => {
+    try {
+      setIsInIframe(window.self !== window.top);
+    } catch (e) {
+      setIsInIframe(true);
+    }
+    setShareSupported(!!navigator.share);
+  }, []);
+
   // Sync initial shared text if Web Share Target API is triggered
   useEffect(() => {
     if (initialSharedText) {
@@ -158,48 +170,111 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
     const compiledMessage = getCompiledMessage();
     const selected = images.filter(img => selectedImageIds.includes(img.id));
 
+    let sharedSuccessfully = false;
+
     // Try Web Share API with Files if supported
-    if (navigator.share && navigator.canShare && selected.length > 0) {
+    if (navigator.share && selected.length > 0) {
       try {
         const fileArray: File[] = [];
         
         for (const img of selected) {
           try {
             const blob = await fetchDriveFileAsBlob(img.id, settings.appsScriptUrl, settings.apiKey);
-            const file = new File([blob], img.name, { type: blob.type || 'image/jpeg' });
+            let mimeType = blob.type || 'image/jpeg';
+            if (mimeType === 'application/octet-stream') {
+              mimeType = 'image/jpeg';
+            }
+            
+            // Ensure filename has standard extension
+            let cleanName = img.name;
+            const hasExt = /\.(jpe?g|png|webp|gif)$/i.test(cleanName);
+            if (!hasExt) {
+              cleanName = `${cleanName}.jpg`;
+            }
+            
+            const file = new File([blob], cleanName, { type: mimeType });
             fileArray.push(file);
           } catch (e) {
             console.error('Error fetching file for share:', img.name, e);
           }
         }
 
-        if (fileArray.length > 0 && navigator.canShare({ files: fileArray })) {
+        const canShareFiles = navigator.canShare && navigator.canShare({ files: fileArray });
+        if (fileArray.length > 0 && (canShareFiles || !navigator.canShare)) {
           await navigator.share({
             files: fileArray,
             title: 'نشر في قناة الواتساب',
             text: compiledMessage
           });
-          setShareSuccessMessage('✨ تم إطلاق مشاركة النظام السريعة! يمكنك الآن اختيار تطبيق واتساب ونشر الصنف فوراً في قناتك دون أي تبويبات خارجية.');
-          setIsSharing(false);
-          return;
+          sharedSuccessfully = true;
+          setShareSuccessMessage('✨ تم إطلاق مشاركة الصور والنص معاً بنجاح عبر نظام التشغيل! يرجى اختيار تطبيق واتساب لنشرها فوراً في قناتك.');
         }
       } catch (err) {
-        console.error('Native share failed or canceled', err);
+        console.error('Native share with files failed:', err);
       }
     }
 
-    // Fallback/Desktop: copy + download completely in-app (no window.open)
-    try {
-      await navigator.clipboard.writeText(compiledMessage);
-    } catch (err) {
-      console.error('Clipboard copy failed', err);
+    // Fallback 1: Try sharing just the text via navigator.share
+    if (!sharedSuccessfully && navigator.share) {
+      try {
+        await navigator.share({
+          title: 'نشر في قناة الواتساب',
+          text: compiledMessage
+        });
+        sharedSuccessfully = true;
+        setShareSuccessMessage('✨ تم إرسال النص لقائمة المشاركة بنجاح! لعدم توافق مشاركة ملفات الصور مع متصفحك الحالي، يرجى حفظ الصور المرفقة ونشرها يدوياً.');
+      } catch (err) {
+        console.error('Native share with text failed:', err);
+      }
     }
 
-    if (selected.length > 0) {
-      await downloadSelectedImages();
+    // Fallback 2: Clipboard + Download + Open WhatsApp Channel URL (Desktop / non-supported browser)
+    if (!sharedSuccessfully) {
+      try {
+        // Try to write image and text to clipboard if possible
+        const clipboardData: Record<string, Blob> = {};
+        clipboardData['text/plain'] = new Blob([compiledMessage], { type: 'text/plain' });
+        
+        if (selected.length > 0) {
+          try {
+            const firstImg = selected[0];
+            const blob = await fetchDriveFileAsBlob(firstImg.id, settings.appsScriptUrl, settings.apiKey);
+            let mimeType = blob.type || 'image/jpeg';
+            if (mimeType === 'application/octet-stream') mimeType = 'image/jpeg';
+            clipboardData[mimeType] = blob;
+          } catch (e) {
+            console.error('Failed to prepare clipboard image:', e);
+          }
+        }
+        
+        if (Object.keys(clipboardData).length > 1) {
+          await navigator.clipboard.write([new ClipboardItem(clipboardData)]);
+        } else {
+          await navigator.clipboard.writeText(compiledMessage);
+        }
+      } catch (err) {
+        console.error('Advanced clipboard copy failed, falling back to standard copy:', err);
+        try {
+          await navigator.clipboard.writeText(compiledMessage);
+        } catch (e) {
+          console.error('Fallback clipboard copy failed:', e);
+        }
+      }
+
+      if (selected.length > 0) {
+        await downloadSelectedImages();
+      }
+
+      setShareSuccessMessage('📥 تم نسخ الوصف بالكامل (مع القصيدة والروابط) وتنزيل الصور المحددة إلى جهازك تلقائياً وبأمان! جاري فتح قناتك بالواتساب الآن لتتمكن من لصق المنشور وإرسال الصور مباشرة دون عناء.');
+      
+      // Open WhatsApp Channel URL if configured
+      if (settings.whatsappChannelUrl) {
+        setTimeout(() => {
+          window.open(settings.whatsappChannelUrl, '_blank');
+        }, 1500);
+      }
     }
 
-    setShareSuccessMessage('📥 تم نسخ وصف المنتج بالكامل وتنزيل الصور المحددة إلى جهازك تلقائياً وبأمان! جاهز للنشر الفوري في قناتك بالواتساب الآن دون فتح تبويبات إضافية.');
     setIsSharing(false);
   };
 
@@ -215,48 +290,104 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
     const compiledMessage = getCompiledMessage();
     const selected = images.filter(img => selectedImageIds.includes(img.id));
 
+    let sharedSuccessfully = false;
+
     // Try Web Share API with Files if supported
-    if (navigator.share && navigator.canShare && selected.length > 0) {
+    if (navigator.share && selected.length > 0) {
       try {
         const fileArray: File[] = [];
         
         for (const img of selected) {
           try {
             const blob = await fetchDriveFileAsBlob(img.id, settings.appsScriptUrl, settings.apiKey);
-            const file = new File([blob], img.name, { type: blob.type || 'image/jpeg' });
+            let mimeType = blob.type || 'image/jpeg';
+            if (mimeType === 'application/octet-stream') {
+              mimeType = 'image/jpeg';
+            }
+            
+            // Ensure filename has standard extension
+            let cleanName = img.name;
+            const hasExt = /\.(jpe?g|png|webp|gif)$/i.test(cleanName);
+            if (!hasExt) {
+              cleanName = `${cleanName}.jpg`;
+            }
+            
+            const file = new File([blob], cleanName, { type: mimeType });
             fileArray.push(file);
           } catch (e) {
             console.error('Error fetching file for share:', img.name, e);
           }
         }
 
-        if (fileArray.length > 0 && navigator.canShare({ files: fileArray })) {
+        const canShareFiles = navigator.canShare && navigator.canShare({ files: fileArray });
+        if (fileArray.length > 0 && (canShareFiles || !navigator.canShare)) {
           await navigator.share({
             files: fileArray,
             title: 'مشاركة عامة للصنف',
             text: compiledMessage
           });
-          setShareSuccessMessage('✨ تم إطلاق نافذة المشاركة العامة بنجاح! شارك الصنف مع أي تطبيق أو شخص بكل سهولة.');
-          setIsSharing(false);
-          return;
+          sharedSuccessfully = true;
+          setShareSuccessMessage('✨ تم إطلاق نافذة المشاركة العامة بالصور والنص معاً بنجاح! شارك الصنف مع أي تطبيق أو شخص بكل سهولة.');
         }
       } catch (err) {
         console.error('Native share failed or canceled', err);
       }
     }
 
-    // Fallback: Copy and Download
-    try {
-      await navigator.clipboard.writeText(compiledMessage);
-    } catch (err) {
-      console.error('Clipboard copy failed', err);
+    // Fallback 1: Try sharing just the text via navigator.share
+    if (!sharedSuccessfully && navigator.share) {
+      try {
+        await navigator.share({
+          title: 'مشاركة عامة للصنف',
+          text: compiledMessage
+        });
+        sharedSuccessfully = true;
+        setShareSuccessMessage('✨ تم إطلاق مشاركة النص بنجاح! لعدم توافق مشاركة ملفات الصور مع متصفحك الحالي، يرجى حفظ الصور المرفقة ونشرها يدوياً.');
+      } catch (err) {
+        console.error('Sharing text failed:', err);
+      }
     }
 
-    if (selected.length > 0) {
-      await downloadSelectedImages();
+    // Fallback 2: Copy and Download
+    if (!sharedSuccessfully) {
+      try {
+        // Try to write image and text to clipboard if possible
+        const clipboardData: Record<string, Blob> = {};
+        clipboardData['text/plain'] = new Blob([compiledMessage], { type: 'text/plain' });
+        
+        if (selected.length > 0) {
+          try {
+            const firstImg = selected[0];
+            const blob = await fetchDriveFileAsBlob(firstImg.id, settings.appsScriptUrl, settings.apiKey);
+            let mimeType = blob.type || 'image/jpeg';
+            if (mimeType === 'application/octet-stream') mimeType = 'image/jpeg';
+            clipboardData[mimeType] = blob;
+          } catch (e) {
+            console.error('Failed to prepare clipboard image:', e);
+          }
+        }
+        
+        if (Object.keys(clipboardData).length > 1) {
+          await navigator.clipboard.write([new ClipboardItem(clipboardData)]);
+        } else {
+          await navigator.clipboard.writeText(compiledMessage);
+        }
+      } catch (err) {
+        console.error('Clipboard copy failed, using fallback:', err);
+        try {
+          await navigator.clipboard.writeText(compiledMessage);
+        } catch (e) {
+          console.error('Fallback clipboard copy failed:', e);
+        }
+      }
+
+      if (selected.length > 0) {
+        await downloadSelectedImages();
+      }
+
+      setShareSuccessMessage('📋 تم نسخ النص النهائي للمنشور وتنزيل كافة الصور المحددة في جهازك! يمكنك الآن لصقها ومشاركتها في أي مكان أو تطبيق تريده.');
     }
 
-    setShareSuccessMessage('📋 تم نسخ النص النهائي للمنشور وتنزيل كافة الصور المحددة في جهازك! يمكنك الآن لصقها ومشاركتها في أي مكان أو تطبيق تريده.');
     setIsSharing(false);
   };
 
@@ -272,6 +403,21 @@ export default function SharingTab({ settings, initialSharedText = '' }: Sharing
               <h3 className="text-sm font-bold text-amber-900">رابط ربط السحابة غير مفعّل</h3>
               <p className="text-xs text-amber-700/90 mt-1 font-medium">يرجى إدخال رابط Google Apps Script Web App في تبويب الإعدادات للبدء بربط التطبيق والوصول المباشر دون تعقيدات تسجيل الدخول.</p>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* iframe notice */}
+      {isInIframe && (
+        <div className="bg-blue-50/80 border border-blue-150 rounded-2xl p-5 flex gap-4">
+          <Info className="w-8 h-8 text-[#F27D26] shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <h3 className="text-sm font-bold text-gray-900 font-sans">تلميح لتجربة مشاركة مثالية 📱</h3>
+            <p className="text-xs text-gray-600 font-medium leading-relaxed">
+              أنت تستعرض التطبيق داخل إطار المعاينة حالياً، مما يمنع إطلاق قائمة المشاركة المباشرة للنظام بالصور بسبب قيود الأمان للمتصفح داخل الإطارات الفرعية (iframes).
+              <br />
+              <strong className="text-[#F27D26] font-bold">للحصول على تجربة مشاركة الصور المباشرة كاملة:</strong> يرجى فتح التطبيق في نافذة مستقلة عبر النقر على زر الفتح الخارجي (أعلى اليسار)، أو استعراض الرابط من هاتفك المحمول مباشرة ومشاركة صنفك بكل سلاسة!
+            </p>
           </div>
         </div>
       )}
